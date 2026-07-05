@@ -9,9 +9,9 @@
       "notify_30s": true,
       "notify_10s": true,
       "runtime": {
-        "mode": "paused",
-        "current_round": 1,
-        "remaining": 8,
+        "mode": "idle",
+        "current_round": 0,
+        "remaining": 0,
         "running": false
       }
     },
