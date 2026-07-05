@@ -1,0 +1,38 @@
+{
+  "tabs": [
+    {
+      "name": "boxing",
+      "rounds": 99,
+      "round_len": 180,
+      "rest_len": 60,
+      "prep_len": 10,
+      "notify_30s": true,
+      "notify_10s": true,
+      "runtime": {
+        "mode": "paused",
+        "current_round": 1,
+        "remaining": 8,
+        "running": false
+      }
+    },
+    {
+      "name": "fitnes",
+      "rounds": 99,
+      "round_len": 60,
+      "rest_len": 30,
+      "prep_len": 0,
+      "notify_30s": true,
+      "notify_10s": true,
+      "runtime": {
+        "mode": "paused",
+        "current_round": 1,
+        "remaining": 28,
+        "running": false
+      }
+    }
+  ],
+  "window_size": [
+    2529,
+    1412
+  ]
+}
