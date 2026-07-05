@@ -2,475 +2,334 @@
 import tkinter as tk
 from tkinter import ttk
 import tkinter.font as tkfont
-import json
-import os
-import time
-import subprocess
-import wave
-import struct
-import simpleaudio as sa
+import json, os, time, subprocess, wave, struct
 
 STATE_FILE = "boxing_timer_state.json"
 
-# -------------------------------------------------------------------
-# WAV GENERATION (placeholder tones)
-# -------------------------------------------------------------------
+# ---------------------- SOUND ----------------------
 
-def generate_wav(filename, freq=440, duration=0.25, volume=0.5):
-    if os.path.exists(filename):
-        return
+def generate_wav(path, freq, dur, vol):
+    if os.path.exists(path): return
+    rate = 44100
+    samples = int(dur * rate)
+    amp = int(vol * 32767)
+    period = rate // freq
+    half = period // 2
+    with wave.open(path, "w") as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(rate)
+        for i in range(samples):
+            w.writeframes(struct.pack("<h", amp if (i % period) < half else -amp))
 
-    framerate = 44100
-    n_samples = int(duration * framerate)
-    amplitude = int(volume * 32767)
+def ensure_wav():
+    generate_wav("bell.wav", 880, 0.35, 0.8)
+    generate_wav("n30.wav", 660, 0.25, 0.6)
+    generate_wav("n10.wav", 1000, 0.15, 0.7)
 
-    with wave.open(filename, "w") as w:
-        w.setnchannels(1)
-        w.setsampwidth(2)
-        w.setframerate(framerate)
-
-        period = framerate // freq
-        half_period = period // 2
-
-        for i in range(n_samples):
-            sample = amplitude if (i % period) < half_period else -amplitude
-            w.writeframes(struct.pack("<h", int(sample)))
-
-
-def ensure_wav_files():
-    generate_wav("bell.wav", freq=880, duration=0.35, volume=0.8)
-    generate_wav("notification_30s.wav", freq=660, duration=0.25, volume=0.6)
-    generate_wav("notification_10s.wav", freq=1000, duration=0.15, volume=0.7)
-
-
-def play_wav(path):
+def play(path):
     for cmd in [["aplay", path], ["paplay", path]]:
-        try:
-            subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            return
-        except Exception:
-            continue
+        try: subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); return
+        except: pass
 
-
-# -------------------------------------------------------------------
-# TAB CLASS
-# -------------------------------------------------------------------
+# ---------------------- TAB ----------------------
 
 class BoxingTab:
-    def __init__(self, parent_notebook, app, config=None):
+    def __init__(self, nb, app, cfg=None):
         self.app = app
-        self.notebook = parent_notebook
-
-        self.frame = ttk.Frame(self.notebook)
-        self.notebook.add(self.frame, text=config["name"] if config else "Session")
+        self.nb = nb
+        self.frame = ttk.Frame(nb)
+        nb.add(self.frame, text=(cfg["name"] if cfg else "Session"))
 
         self.running = False
         self.mode = "idle"
-        self.previous_mode = "idle"
         self.current_round = 0
         self.remaining = 0
-        self.last_tick_time = None
+        self.last_tick = None
 
-        self.name_var = tk.StringVar(value=(config["name"] if config else "Session"))
-        self.rounds_var = tk.IntVar(value=(config["rounds"] if config else 3))
-        self.round_len_var = tk.IntVar(value=(config["round_len"] if config else 180))
-        self.rest_len_var = tk.IntVar(value=(config["rest_len"] if config else 60))
-        self.prep_len_var = tk.IntVar(value=(config["prep_len"] if config else 10))
-        self.notify_30s_var = tk.BooleanVar(value=(config["notify_30s"] if config else True))
-        self.notify_10s_var = tk.BooleanVar(value=(config["notify_10s"] if config else True))
+        self.name = tk.StringVar(value=(cfg["name"] if cfg else "Session"))
+        self.rounds = tk.IntVar(value=(cfg["rounds"] if cfg else 3))
+        self.rlen = tk.IntVar(value=(cfg["round_len"] if cfg else 180))
+        self.rest = tk.IntVar(value=(cfg["rest_len"] if cfg else 60))
+        self.prep = tk.IntVar(value=(cfg["prep_len"] if cfg else 10))
+        self.n30 = tk.BooleanVar(value=(cfg["notify_30s"] if cfg else True))
+        self.n10 = tk.BooleanVar(value=(cfg["notify_10s"] if cfg else True))
 
         self.build_ui()
 
-        if config and "runtime" in config:
-            rt = config["runtime"]
-            self.mode = rt.get("mode", "idle")
-            self.current_round = rt.get("current_round", 0)
-            self.remaining = rt.get("remaining", 0)
-            self.running = rt.get("running", False)
+        if cfg and "runtime" in cfg:
+            rt = cfg["runtime"]
+            self.mode = rt["mode"]
+            self.current_round = rt["current_round"]
+            self.remaining = rt["remaining"]
+            self.running = rt["running"]
             if self.running:
-                self.last_tick_time = time.time()
+                self.last_tick = time.time()
                 self.app.root.after(100, self.tick)
-            self.update_clock_display()
+            self.update_display()
 
-    # -------------------------------------------------------------------
+    # ---------------- UI ----------------
+
 
     def build_ui(self):
-        self.frame.columnconfigure(0, weight=1)
+        f = self.frame
+        f.columnconfigure(0, weight=1)
 
-        top_frame = ttk.Frame(self.frame)
-        top_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=5)
-        top_frame.columnconfigure(1, weight=1)
+        # ENLARGED CLOCK REGION — BIGGER THAN BEFORE
+        f.rowconfigure(0, weight=0)   # top controls
+        f.rowconfigure(1, weight=8)   # HUGE clock region
+        f.rowconfigure(2, weight=1)   # settings
+        f.rowconfigure(3, weight=1)   # notifications
 
-        ttk.Label(top_frame, text="Name:", font=self.app.base_font).grid(row=0, column=0, sticky="w")
-        name_entry = ttk.Entry(top_frame, textvariable=self.name_var, font=self.app.base_font)
-        name_entry.grid(row=0, column=1, sticky="ew", padx=5)
-        name_entry.bind("<KeyRelease>", lambda e: self.rename_tab())
+        top = ttk.Frame(f); top.grid(row=0, column=0, sticky="ew", padx=10, pady=5)
+        top.columnconfigure(1, weight=1)
 
-        ttk.Button(top_frame, text="Start", command=self.start).grid(row=0, column=2, padx=5)
-        ttk.Button(top_frame, text="Stop", command=self.stop).grid(row=0, column=3, padx=5)
-        ttk.Button(top_frame, text="Reset", command=self.reset).grid(row=0, column=4, padx=5)
-        ttk.Button(top_frame, text="Pause", command=self.pause).grid(row=0, column=5, padx=5)
+        ttk.Label(top, text="Name:", font=self.app.base_font).grid(row=0, column=0)
+        e = ttk.Entry(top, textvariable=self.name, font=self.app.base_font)
+        e.grid(row=0, column=1, sticky="ew"); e.bind("<KeyRelease>", lambda *_: self.rename())
 
-        self.clock_label = tk.Label(
-            self.frame,
+        for i, (txt, cmd) in enumerate([("Start", self.start), ("Stop", self.stop),
+                                        ("Reset", self.reset), ("Pause", self.pause)]):
+            ttk.Button(top, text=txt, command=cmd).grid(row=0, column=i+2, padx=5)
+
+        # MASSIVE CLOCK REGION
+        self.clock = tk.Label(
+            f,
             text="00:00",
             font=self.app.clock_font,
-            bg="#cccccc",
+            bg="#ccc",
             fg="black",
-            relief="sunken"
+            relief="sunken",
+            padx=40, pady=40   # << HUGE padding
         )
-        self.clock_label.grid(row=1, column=0, sticky="nsew", pady=10)
-        self.frame.rowconfigure(1, weight=1)
+        self.clock.grid(row=1, column=0, sticky="nsew", pady=20)
+        self.clock.bind("<Button-1>", lambda *_: self.toggle())
+        self.clock.bind("<Button-3>", lambda *_: self.reset())
 
-        self.clock_label.bind("<Button-1>", self.toggle_start_pause)
-        self.clock_label.bind("<Button-3>", self.right_click_reset)
+        cfg = ttk.Frame(f); cfg.grid(row=2, column=0, sticky="ew", padx=10, pady=5)
+        for i, (txt, var, lo, hi) in enumerate([
+            ("Rounds:", self.rounds, 1, 999),
+            ("Round (s):", self.rlen, 10, 3600),
+            ("Rest (s):", self.rest, 5, 3600),
+            ("Prep (s):", self.prep, 0, 3600)
+        ]):
+            ttk.Label(cfg, text=txt, font=self.app.base_font).grid(row=i, column=0)
+            tk.Spinbox(cfg, textvariable=var, from_=lo, to=hi,
+                       font=self.app.base_font, width=4).grid(row=i, column=1, sticky="w")
 
-        self.frame.bind("<Configure>", self.scale_fonts)
+        nf = ttk.Frame(f); nf.grid(row=3, column=0, sticky="ew", padx=10, pady=5)
+        ttk.Checkbutton(nf, text="Notify 30s", variable=self.n30,
+                        command=self.app.save).pack(anchor="w")
+        ttk.Checkbutton(nf, text="Notify 10s", variable=self.n10,
+                        command=self.app.save).pack(anchor="w")
 
-        cfg_frame = ttk.Frame(self.frame)
-        cfg_frame.grid(row=2, column=0, sticky="ew", padx=10, pady=5)
-        cfg_frame.columnconfigure(1, weight=1)
+        for v in [self.rounds, self.rlen, self.rest, self.prep, self.n30, self.n10]:
+            v.trace_add("write", lambda *_: self.app.save())
 
-        def spinbox(var, from_, to):
-            sb = tk.Spinbox(cfg_frame, textvariable=var, from_=from_, to=to,
-                            font=self.app.base_font, width=6)
-            return sb
+        f.bind("<Configure>", self.scale)
 
-        ttk.Label(cfg_frame, text="Rounds:", font=self.app.base_font).grid(row=0, column=0, sticky="w")
-        spinbox(self.rounds_var, 1, 99).grid(row=0, column=1, sticky="w", padx=5)
 
-        ttk.Label(cfg_frame, text="Round length (s):", font=self.app.base_font).grid(row=1, column=0, sticky="w")
-        spinbox(self.round_len_var, 10, 3600).grid(row=1, column=1, sticky="w", padx=5)
 
-        ttk.Label(cfg_frame, text="Rest length (s):", font=self.app.base_font).grid(row=2, column=0, sticky="w")
-        spinbox(self.rest_len_var, 5, 3600).grid(row=2, column=1, sticky="w", padx=5)
 
-        ttk.Label(cfg_frame, text="Prep length (s):", font=self.app.base_font).grid(row=3, column=0, sticky="w")
-        spinbox(self.prep_len_var, 0, 3600).grid(row=3, column=1, sticky="w", padx=5)
 
-        notif_frame = ttk.Frame(self.frame)
-        notif_frame.grid(row=3, column=0, sticky="ew", padx=10, pady=5)
+    # ---------------- Logic ----------------
 
-        ttk.Checkbutton(
-            notif_frame,
-            text="Notify 30s before end of round",
-            variable=self.notify_30s_var,
-            command=self.app.save_state
-        ).pack(anchor="w")
+    def scale(self, e):
+        h = max(e.height, 200)
+        self.app.base_font.configure(size=max(14, h // 25))
+        self.app.clock_font.configure(size=max(64, h // 4))
 
-        ttk.Checkbutton(
-            notif_frame,
-            text="Notify 10s before end of round",
-            variable=self.notify_10s_var,
-            command=self.app.save_state
-        ).pack(anchor="w")
+    def rename(self):
+        idx = self.nb.index(self.frame)
+        self.nb.tab(idx, text=self.name.get())
+        self.app.save()
 
-        for var in [
-            self.rounds_var,
-            self.round_len_var,
-            self.rest_len_var,
-            self.prep_len_var,
-            self.notify_30s_var,
-            self.notify_10s_var,
-        ]:
-            var.trace_add("write", lambda *args: self.app.save_state())
-
-    # -------------------------------------------------------------------
-
-    def scale_fonts(self, event):
-        now = time.time()
-        if hasattr(self, "_last_scale") and now - self._last_scale < 0.1:
-            return
-        self._last_scale = now
-
-        h = max(event.height, 200)
-        base_size = max(14, h // 25)
-        clock_size = max(64, h // 3)
-        self.app.base_font.configure(size=base_size)
-        self.app.clock_font.configure(size=clock_size)
-
-    # -------------------------------------------------------------------
-
-    def toggle_start_pause(self, event):
-        if not self.running and self.mode != "paused":
-            self.start()
-        elif self.mode == "paused":
-            self.unpause()
-        else:
-            self.pause()
-
-    def right_click_reset(self, event):
-        self.reset()
-
-    def rename_tab(self):
-        idx = self.notebook.index(self.frame)
-        self.notebook.tab(idx, text=self.name_var.get())
-        self.app.save_state()
+    def toggle(self):
+        if not self.running and self.mode != "paused": self.start()
+        elif self.mode == "paused": self.unpause()
+        else: self.pause()
 
     def start(self):
-        if self.running:
-            return
-
-        rounds = int(self.rounds_var.get())
-        round_len = int(self.round_len_var.get())
-        rest_len = int(self.rest_len_var.get())
-        prep_len = int(self.prep_len_var.get())
-
+        self.app.stop_others(self)
+        if self.running: return
         self.running = True
         self.current_round = 1
-
-        if prep_len > 0:
-            self.mode = "prep"
-            self.remaining = prep_len
-        else:
-            self.mode = "fight"
-            self.remaining = round_len
-            self.app.play_bell()
-
-        self.last_tick_time = time.time()
-        self.update_clock_display()
-        self.app.save_state()
+        self.mode = "prep" if self.prep.get() > 0 else "fight"
+        self.remaining = self.prep.get() if self.mode == "prep" else self.rlen.get()
+        if self.mode == "fight": play("bell.wav")
+        self.last_tick = time.time()
+        self.update_display()
+        self.app.save()
         self.app.root.after(100, self.tick)
 
     def stop(self):
         self.running = False
-        self.previous_mode = self.mode
         self.mode = "idle"
-        self.update_clock_display()
-        self.app.save_state()
+        self.update_display()
+        self.app.save()
 
     def reset(self):
         self.running = False
         self.mode = "idle"
         self.current_round = 0
         self.remaining = 0
-        self.update_clock_display()
-        self.app.save_state()
+        self.update_display()
+        self.app.save()
 
     def pause(self):
-        if not self.running:
-            return
+        if not self.running: return
         self.running = False
-        self.previous_mode = self.mode
         self.mode = "paused"
-        self.update_clock_display()
-        self.app.save_state()
+        self.update_display()
+        self.app.save()
 
     def unpause(self):
-        if self.mode != "paused":
-            return
+        if self.mode != "paused": return
         self.running = True
-        self.mode = self.previous_mode if self.previous_mode not in ("idle", "paused") else "fight"
-        self.last_tick_time = time.time()
-        self.update_clock_display()
-        self.app.save_state()
+        self.mode = "fight"
+        self.last_tick = time.time()
+        self.update_display()
+        self.app.save()
         self.app.root.after(100, self.tick)
 
     def tick(self):
-        if not self.running:
-            return
-
+        if not self.running: return
         now = time.time()
-        elapsed = now - self.last_tick_time
-        if elapsed >= 1.0:
-            self.last_tick_time = now
-            self.remaining -= int(elapsed)
-            if self.remaining <= 0:
-                self.handle_phase_end()
-            else:
-                self.check_notifications()
-
-        self.update_clock_display()
+        if now - self.last_tick >= 1:
+            self.last_tick = now
+            self.remaining -= 1
+            if self.remaining <= 0: self.phase_end()
+            else: self.notify()
+        self.update_display()
         self.app.root.after(100, self.tick)
 
-    def handle_phase_end(self):
-        rounds = int(self.rounds_var.get())
-        round_len = int(self.round_len_var.get())
-        rest_len = int(self.rest_len_var.get())
-
-        self.app.play_bell()
-
+    def phase_end(self):
+        play("bell.wav")
         if self.mode == "prep":
-            self.mode = "fight"
-            self.remaining = round_len
-            self.app.play_bell()
-
+            self.mode = "fight"; self.remaining = self.rlen.get(); play("bell.wav")
         elif self.mode == "fight":
-            if self.current_round >= rounds:
+            if self.current_round >= self.rounds.get():
                 self.running = False
                 self.mode = "idle"
                 self.remaining = 0
             else:
-                self.mode = "rest"
-                self.remaining = rest_len
-                self.app.play_bell()
-
+                self.mode = "rest"; self.remaining = self.rest.get(); play("bell.wav")
         elif self.mode == "rest":
             self.current_round += 1
-            self.mode = "fight"
-            self.remaining = round_len
-            self.app.play_bell()
+            self.mode = "fight"; self.remaining = self.rlen.get(); play("bell.wav")
+        self.app.save()
 
-        self.app.save_state()
+    def notify(self):
+        if self.mode != "fight": return
+        if self.n30.get() and self.remaining == 30: play("n30.wav")
+        if self.n10.get() and self.remaining == 10: play("n10.wav")
 
-    def check_notifications(self):
-        if self.mode != "fight":
-            return
-
-        remaining = self.remaining
-
-        if self.notify_30s_var.get() and remaining == 30:
-            self.app.play_notification_30s()
-
-        if self.notify_10s_var.get() and remaining == 10:
-            self.app.play_notification_10s()
-
-    def update_clock_display(self):
-        mins = self.remaining // 60
-        secs = self.remaining % 60
-        self.clock_label.config(text=f"{mins:02d}:{secs:02d}")
-
-        if self.mode == "fight":
-            bg = "#66cc66"
-        elif self.mode == "rest":
-            bg = "#ff6666"
-        elif self.mode == "prep":
-            bg = "#ffff99"
-        elif self.mode == "paused":
-            bg = "#9999ff"
-        else:
-            bg = "#cccccc"
-
-        self.clock_label.config(bg=bg)
+    def update_display(self):
+        m, s = divmod(self.remaining, 60)
+        self.clock.config(text=f"{m:02d}:{s:02d}")
+        colors = {"fight": "#66cc66", "rest": "#ff6666",
+                  "prep": "#ffff99", "paused": "#9999ff", "idle": "#ccc"}
+        self.clock.config(bg=colors.get(self.mode, "#ccc"))
 
     def serialize(self):
         return {
-            "name": self.name_var.get(),
-            "rounds": int(self.rounds_var.get()),
-            "round_len": int(self.round_len_var.get()),
-            "rest_len": int(self.rest_len_var.get()),
-            "prep_len": int(self.prep_len_var.get()),
-            "notify_30s": bool(self.notify_30s_var.get()),
-            "notify_10s": bool(self.notify_10s_var.get()),
+            "name": self.name.get(),
+            "rounds": self.rounds.get(),
+            "round_len": self.rlen.get(),
+            "rest_len": self.rest.get(),
+            "prep_len": self.prep.get(),
+            "notify_30s": self.n30.get(),
+            "notify_10s": self.n10.get(),
             "runtime": {
                 "mode": self.mode,
                 "current_round": self.current_round,
                 "remaining": self.remaining,
-                "running": self.running,
-            },
+                "running": self.running
+            }
         }
 
-
-# -------------------------------------------------------------------
-# MAIN APP
-# -------------------------------------------------------------------
+# ---------------------- APP ----------------------
 
 class BoxingTimerApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Boxing Timer")
-
-        ensure_wav_files()
+        root.title("Boxing Timer")
+        ensure_wav()
 
         self.base_font = tkfont.Font(family="Helvetica", size=14)
         self.clock_font = tkfont.Font(family="Helvetica", size=64, weight="bold")
 
-        self.notebook = ttk.Notebook(root)
-        self.notebook.pack(fill="both", expand=True)
+        self.nb = ttk.Notebook(root)
+        self.nb.pack(fill="both", expand=True)
 
         self.tabs = []
 
-        bottom_frame = ttk.Frame(root)
-        bottom_frame.pack(fill="x", padx=10, pady=5)
-
-        ttk.Button(bottom_frame, text="Add Tab", command=self.add_tab).pack(side="left")
-        ttk.Button(bottom_frame, text="Save", command=self.save_state).pack(side="right")
+        bottom = ttk.Frame(root); bottom.pack(fill="x", padx=10, pady=5)
+        ttk.Button(bottom, text="Add Tab", command=self.add_tab).pack(side="left")
+        ttk.Button(bottom, text="Close Tab", command=self.close_tab).pack(side="left", padx=5)
+        ttk.Button(bottom, text="Save", command=self.save).pack(side="right")
 
         self.window_size = None
-        self.load_state()
+        self.load()
+
+        if not self.tabs: self.add_tab()
 
         if self.window_size:
-            w, h = self.window_size
-            self.root.geometry(f"{w}x{h}")
+            w, h = self.window_size; root.geometry(f"{w}x{h}")
         else:
-            self.root.geometry("700x500")
+            root.geometry("700x500")
 
-        if not self.tabs:
-            self.add_tab()
+        root.bind("<Configure>", self.resize)
+        root.protocol("WM_DELETE_WINDOW", self.close)
 
-        self.root.bind("<Configure>", self.on_resize)
-        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
-
-        # -------------------------------------------------------------
-        # ONE-TIME INITIAL RESCALE
-        # -------------------------------------------------------------
-        self.root.update_idletasks()
+        root.update_idletasks()
         for t in self.tabs:
-            e = tk.Event()
-            e.height = self.root.winfo_height()
-            t.scale_fonts(e)
+            e = tk.Event(); e.height = root.winfo_height(); t.scale(e)
 
-    # -------------------------------------------------------------------
+    def add_tab(self, cfg=None):
+        t = BoxingTab(self.nb, self, cfg)
+        self.tabs.append(t)
+        self.save()
 
-    def add_tab(self, config=None):
-        tab = BoxingTab(self.notebook, self, config=config)
-        self.tabs.append(tab)
-        self.save_state()
+    def close_tab(self):
+        try: idx = self.nb.index("current")
+        except: return
+        self.nb.forget(self.tabs[idx].frame)
+        del self.tabs[idx]
+        self.save()
+        if not self.tabs: self.add_tab()
 
-    def play_bell(self):
-        play_wav("bell.wav")
+    def stop_others(self, active):
+        for t in self.tabs:
+            if t is not active: t.stop()
 
-    def play_notification_30s(self):
-        play_wav("notification_30s.wav")
-
-    def play_notification_10s(self):
-        play_wav("notification_10s.wav")
-
-    def save_state(self):
-        if self.root.winfo_width() > 1 and self.root.winfo_height() > 1:
+    def save(self):
+        if self.root.winfo_width() > 1:
             self.window_size = (self.root.winfo_width(), self.root.winfo_height())
-        data = {
-            "tabs": [t.serialize() for t in self.tabs],
-            "window_size": self.window_size,
-        }
-        try:
-            with open(STATE_FILE, "w") as f:
-                json.dump(data, f, indent=2)
-        except Exception as e:
-            print("Error saving state:", e)
+        data = {"tabs": [t.serialize() for t in self.tabs],
+                "window_size": self.window_size}
+        with open(STATE_FILE, "w") as f: json.dump(data, f, indent=2)
 
-    def load_state(self):
-        if not os.path.exists(STATE_FILE):
-            return
+    def load(self):
+        if not os.path.exists(STATE_FILE): return
         try:
-            with open(STATE_FILE, "r") as f:
-                data = json.load(f)
-        except Exception:
-            return
-
+            with open(STATE_FILE) as f: data = json.load(f)
+        except: return
         self.window_size = data.get("window_size")
-        for cfg in data.get("tabs", []):
-            self.add_tab(config=cfg)
+        for cfg in data.get("tabs", []): self.add_tab(cfg)
 
-    def on_resize(self, event):
-        if event.widget == self.root:
-            if event.width > 1 and event.height > 1:
-                self.window_size = (event.width, event.height)
+    def resize(self, e):
+        if e.widget == self.root and e.width > 1:
+            self.window_size = (e.width, e.height)
 
-    def on_close(self):
-        self.save_state()
+    def close(self):
+        self.save()
         self.root.destroy()
 
-
-# -------------------------------------------------------------------
-# MAIN
-# -------------------------------------------------------------------
+# ---------------------- MAIN ----------------------
 
 def main():
     root = tk.Tk()
-    app = BoxingTimerApp(root)
+    BoxingTimerApp(root)
     root.mainloop()
-
 
 if __name__ == "__main__":
     main()
